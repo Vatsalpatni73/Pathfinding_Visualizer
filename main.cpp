@@ -12,7 +12,7 @@ const int COLS = 40;
 const int CELL_SIZE = WIDTH / COLS;
 
 enum State { EMPTY, WALL, START, END, VISITED_F, VISITED_B, PATH };
-enum AlgoType { NONE, BFS_ALGO, DFS_ALGO, DIJKSTRA_ALGO, BI_ASTAR_ALGO };
+enum AlgoType { NONE, DIJKSTRA_ALGO, BI_ASTAR_ALGO };
 
 struct Node {
     int id, row, col;
@@ -66,14 +66,11 @@ int main() {
     bool pathFound = false;
     int meetingNode = -1;
 
-    std::queue<int> q;
-    std::vector<int> stack;
     std::priority_queue<std::pair<float, int>, std::vector<std::pair<float, int>>, CompareNode> pq;
     std::priority_queue<std::pair<float, int>, std::vector<std::pair<float, int>>, CompareNode> pqF, pqB;
 
     auto resetSearchState = [&]() {
         isRunning = false; pathFound = false; meetingNode = -1;
-        q = std::queue<int>(); stack.clear();
         pq = decltype(pq)(); pqF = decltype(pqF)(); pqB = decltype(pqB)();
         for (auto& n : grid) {
             if (n.state != WALL && n.state != START && n.state != END) n.state = EMPTY;
@@ -89,13 +86,7 @@ int main() {
             if (event.type == sf::Event::Closed) window.close();
             if (event.type == sf::Event::KeyPressed && startId != -1 && endId != -1 && !isRunning) {
                 resetSearchState();
-                if (event.key.code == sf::Keyboard::B) {
-                    currentAlgo = BFS_ALGO; isRunning = true;
-                    q.push(startId); grid[startId].costF = 0;
-                } else if (event.key.code == sf::Keyboard::D) {
-                    currentAlgo = DFS_ALGO; isRunning = true;
-                    stack.push_back(startId);
-                } else if (event.key.code == sf::Keyboard::K) {
+                if (event.key.code == sf::Keyboard::K) {
                     currentAlgo = DIJKSTRA_ALGO; isRunning = true;
                     pq.push({0, startId}); grid[startId].costF = 0;
                 } else if (event.key.code == sf::Keyboard::A) {
@@ -131,38 +122,7 @@ int main() {
 
         if (isRunning && !pathFound) {
             for(int step = 0; step < 5 && isRunning && !pathFound; ++step) {
-                if (currentAlgo == BFS_ALGO) {
-                    if (q.empty()) { isRunning = false; break; }
-                    int curr = q.front(); q.pop();
-                    if (curr == endId) { pathFound = true; meetingNode = curr; break; }
-                    for (auto [dr, dc] : directions) {
-                        int nr = grid[curr].row + dr, nc = grid[curr].col + dc;
-                        if (isValid(nr, nc)) {
-                            int nid = nr * COLS + nc;
-                            if (grid[nid].state != WALL && grid[nid].costF == std::numeric_limits<float>::infinity()) {
-                                grid[nid].costF = grid[curr].costF + 1;
-                                grid[nid].parentF = curr;
-                                if (nid != endId) grid[nid].state = VISITED_F;
-                                q.push(nid);
-                            }
-                        }
-                    }
-                } else if (currentAlgo == DFS_ALGO) {
-                    if (stack.empty()) { isRunning = false; break; }
-                    int curr = stack.back(); stack.pop_back();
-                    if (curr == endId) { pathFound = true; meetingNode = curr; break; }
-                    if (curr != startId) grid[curr].state = VISITED_F;
-                    for (auto [dr, dc] : directions) {
-                        int nr = grid[curr].row + dr, nc = grid[curr].col + dc;
-                        if (isValid(nr, nc)) {
-                            int nid = nr * COLS + nc;
-                            if ((grid[nid].state == EMPTY || grid[nid].state == END) && grid[nid].parentF == -1) {
-                                grid[nid].parentF = curr;
-                                stack.push_back(nid);
-                            }
-                        }
-                    }
-                } else if (currentAlgo == DIJKSTRA_ALGO) {
+                if (currentAlgo == DIJKSTRA_ALGO) {
                     if (pq.empty()) { isRunning = false; break; }
                     int curr = pq.top().second; pq.pop();
                     if (curr == endId) { pathFound = true; meetingNode = curr; break; }
