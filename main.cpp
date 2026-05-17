@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <unordered_map>
+#include <algorithm>
 
 const int WIDTH = 800;
 const int HEIGHT = 800;
@@ -12,7 +13,7 @@ const int COLS = 40;
 const int CELL_SIZE = WIDTH / COLS;
 
 enum State { EMPTY, WALL, START, END, VISITED_F, VISITED_B, PATH };
-enum AlgoType { NONE, BFS_ALGO, DFS_ALGO, DIJKSTRA_ALGO, BI_ASTAR_ALGO };
+enum AlgoType { NONE, DIJKSTRA_ALGO, BI_ASTAR_ALGO };
 
 struct Node {
     int id, row, col;
@@ -64,17 +65,24 @@ int main() {
     AlgoType currentAlgo = NONE;
     bool isRunning = false;
     bool pathFound = false;
+    bool isAnimatingPath = false;
     int meetingNode = -1;
+    std::vector<int> pathToAnimate;
+    std::size_t pathIndex = 0;
+    sf::Clock animationClock;
+    // At 60 FPS this advances at most once per frame: visible, but not painfully slow.
+    const sf::Time SEARCH_STEP_DELAY = sf::milliseconds(12);
+    const sf::Time PATH_STEP_DELAY = sf::milliseconds(45);
 
-    std::queue<int> q;
-    std::vector<int> stack;
     std::priority_queue<std::pair<float, int>, std::vector<std::pair<float, int>>, CompareNode> pq;
     std::priority_queue<std::pair<float, int>, std::vector<std::pair<float, int>>, CompareNode> pqF, pqB;
+    std::vector<bool> dijkstraSettled(ROWS * COLS, false);
 
     auto resetSearchState = [&]() {
-        isRunning = false; pathFound = false; meetingNode = -1;
-        q = std::queue<int>(); stack.clear();
+        isRunning = false; pathFound = false; isAnimatingPath = false;
+        meetingNode = -1; pathToAnimate.clear(); pathIndex = 0;
         pq = decltype(pq)(); pqF = decltype(pqF)(); pqB = decltype(pqB)();
+        std::fill(dijkstraSettled.begin(), dijkstraSettled.end(), false);
         for (auto& n : grid) {
             if (n.state != WALL && n.state != START && n.state != END) n.state = EMPTY;
             n.costF = std::numeric_limits<float>::infinity();
@@ -87,15 +95,13 @@ int main() {
         sf::Event event;
         while (window.pollEvent(event)) {
             if (event.type == sf::Event::Closed) window.close();
-            if (event.type == sf::Event::KeyPressed && startId != -1 && endId != -1 && !isRunning) {
+            if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::R && !isRunning) {
+                startId = -1; endId = -1; currentAlgo = NONE;
+                for (int i = 0; i < ROWS * COLS; ++i) grid[i] = Node(i / COLS, i % COLS);
+            } else if (event.type == sf::Event::KeyPressed && startId != -1 && endId != -1 && !isRunning &&
+                       (event.key.code == sf::Keyboard::K || event.key.code == sf::Keyboard::A)) {
                 resetSearchState();
-                if (event.key.code == sf::Keyboard::B) {
-                    currentAlgo = BFS_ALGO; isRunning = true;
-                    q.push(startId); grid[startId].costF = 0;
-                } else if (event.key.code == sf::Keyboard::D) {
-                    currentAlgo = DFS_ALGO; isRunning = true;
-                    stack.push_back(startId);
-                } else if (event.key.code == sf::Keyboard::K) {
+                if (event.key.code == sf::Keyboard::K) {
                     currentAlgo = DIJKSTRA_ALGO; isRunning = true;
                     pq.push({0, startId}); grid[startId].costF = 0;
                 } else if (event.key.code == sf::Keyboard::A) {
@@ -103,10 +109,8 @@ int main() {
                     pqF.push({heuristic(grid[startId].row, grid[startId].col, grid[endId].row, grid[endId].col), startId});
                     pqB.push({heuristic(grid[endId].row, grid[endId].col, grid[startId].row, grid[startId].col), endId});
                     grid[startId].costF = 0; grid[endId].costB = 0;
-                } else if (event.key.code == sf::Keyboard::R) {
-                    startId = -1; endId = -1; currentAlgo = NONE;
-                    for (int i = 0; i < ROWS * COLS; ++i) grid[i] = Node(i / COLS, i % COLS);
                 }
+                if (isRunning) animationClock.restart();
             }
         }
 
@@ -129,61 +133,53 @@ int main() {
             }
         }
 
-        if (isRunning && !pathFound) {
-            for(int step = 0; step < 5 && isRunning && !pathFound; ++step) {
-                if (currentAlgo == BFS_ALGO) {
-                    if (q.empty()) { isRunning = false; break; }
-                    int curr = q.front(); q.pop();
-                    if (curr == endId) { pathFound = true; meetingNode = curr; break; }
-                    for (auto [dr, dc] : directions) {
-                        int nr = grid[curr].row + dr, nc = grid[curr].col + dc;
-                        if (isValid(nr, nc)) {
-                            int nid = nr * COLS + nc;
-                            if (grid[nid].state != WALL && grid[nid].costF == std::numeric_limits<float>::infinity()) {
-                                grid[nid].costF = grid[curr].costF + 1;
-                                grid[nid].parentF = curr;
-                                if (nid != endId) grid[nid].state = VISITED_F;
-                                q.push(nid);
+        // Advance exactly one search expansion per tick, so every update is visible.
+        if (isRunning && !pathFound && !isAnimatingPath && animationClock.getElapsedTime() >= SEARCH_STEP_DELAY) {
+            animationClock.restart();
+                if (currentAlgo == DIJKSTRA_ALGO) {
+                    int curr = -1;
+                    while (!pq.empty()) {
+                        const auto [queuedCost, candidate] = pq.top();
+                        pq.pop();
+                        if (!dijkstraSettled[candidate] && queuedCost == grid[candidate].costF) {
+                            curr = candidate;
+                            break;
+                        }
+                    }
+
+                    if (curr == -1) {
+                        isRunning = false; // The remaining grid is unreachable.
+                    } else {
+                        dijkstraSettled[curr] = true;
+                        if (curr != startId && curr != endId) grid[curr].state = VISITED_F;
+
+                        if (curr == endId) {
+                            pathFound = true;
+                            meetingNode = curr;
+                        } else {
+                            for (auto [dr, dc] : directions) {
+                                int nr = grid[curr].row + dr, nc = grid[curr].col + dc;
+                                if (isValid(nr, nc)) {
+                                    int nid = nr * COLS + nc;
+                                    if (!dijkstraSettled[nid] && grid[nid].state != WALL &&
+                                        grid[curr].costF + 1 < grid[nid].costF) {
+                                        grid[nid].costF = grid[curr].costF + 1;
+                                        grid[nid].parentF = curr;
+                                        if (nid != endId) grid[nid].state = VISITED_F;
+                                        pq.push({grid[nid].costF, nid});
+                                    }
+                                }
                             }
                         }
                     }
-                } else if (currentAlgo == DFS_ALGO) {
-                    if (stack.empty()) { isRunning = false; break; }
-                    int curr = stack.back(); stack.pop_back();
-                    if (curr == endId) { pathFound = true; meetingNode = curr; break; }
-                    if (curr != startId) grid[curr].state = VISITED_F;
-                    for (auto [dr, dc] : directions) {
-                        int nr = grid[curr].row + dr, nc = grid[curr].col + dc;
-                        if (isValid(nr, nc)) {
-                            int nid = nr * COLS + nc;
-                            if ((grid[nid].state == EMPTY || grid[nid].state == END) && grid[nid].parentF == -1) {
-                                grid[nid].parentF = curr;
-                                stack.push_back(nid);
-                            }
-                        }
-                    }
-                } else if (currentAlgo == DIJKSTRA_ALGO) {
-                    if (pq.empty()) { isRunning = false; break; }
-                    int curr = pq.top().second; pq.pop();
-                    if (curr == endId) { pathFound = true; meetingNode = curr; break; }
-                    for (auto [dr, dc] : directions) {
-                        int nr = grid[curr].row + dr, nc = grid[curr].col + dc;
-                        if (isValid(nr, nc)) {
-                            int nid = nr * COLS + nc;
-                            if (grid[nid].state != WALL && grid[curr].costF + 1 < grid[nid].costF) {
-                                grid[nid].costF = grid[curr].costF + 1;
-                                grid[nid].parentF = curr;
-                                if (nid != endId) grid[nid].state = VISITED_F;
-                                pq.push({grid[nid].costF, nid});
-                            }
-                        }
                     }
                 } else if (currentAlgo == BI_ASTAR_ALGO) {
-                    if (pqF.empty() || pqB.empty()) { isRunning = false; break; }
+                    if (pqF.empty() || pqB.empty()) { isRunning = false; }
+                    else {
                     
                     int currF = pqF.top().second; pqF.pop();
-                    if (grid[currF].parentB != -1 || currF == endId) { pathFound = true; meetingNode = currF; break; }
-                    for (auto [dr, dc] : directions) {
+                    if (grid[currF].parentB != -1 || currF == endId) { pathFound = true; meetingNode = currF; }
+                    if (!pathFound) for (auto [dr, dc] : directions) {
                         int nr = grid[currF].row + dr, nc = grid[currF].col + dc;
                         if (isValid(nr, nc)) {
                             int nid = nr * COLS + nc;
@@ -196,11 +192,11 @@ int main() {
                         }
                     }
 
-                    if(pathFound) break;
+                    if(!pathFound) {
 
                     int currB = pqB.top().second; pqB.pop();
-                    if (grid[currB].parentF != -1 || currB == startId) { pathFound = true; meetingNode = currB; break; }
-                    for (auto [dr, dc] : directions) {
+                    if (grid[currB].parentF != -1 || currB == startId) { pathFound = true; meetingNode = currB; }
+                    if (!pathFound) for (auto [dr, dc] : directions) {
                         int nr = grid[currB].row + dr, nc = grid[currB].col + dc;
                         if (isValid(nr, nc)) {
                             int nid = nr * COLS + nc;
@@ -212,23 +208,49 @@ int main() {
                             }
                         }
                     }
+                    }
+                    }
                 }
-            }
         }
 
         if (pathFound && meetingNode != -1) {
-            int curr = meetingNode;
-            while (curr != -1 && curr != startId && curr != endId) {
-                grid[curr].state = PATH;
-                curr = grid[curr].parentF;
+            // Build the route once, then reveal one node at a time below.
+            pathToAnimate.clear();
+            if (currentAlgo == DIJKSTRA_ALGO) {
+                int curr = grid[meetingNode].parentF;
+                while (curr != -1 && curr != startId) {
+                    pathToAnimate.push_back(curr);
+                    curr = grid[curr].parentF;
+                }
+                std::reverse(pathToAnimate.begin(), pathToAnimate.end());
+            } else {
+                int curr = meetingNode;
+                while (curr != -1 && curr != startId && curr != endId) {
+                    pathToAnimate.push_back(curr);
+                    curr = grid[curr].parentF;
+                }
+                std::reverse(pathToAnimate.begin(), pathToAnimate.end());
+
+                curr = grid[meetingNode].parentB;
+                while (curr != -1 && curr != startId && curr != endId) {
+                    pathToAnimate.push_back(curr);
+                    curr = grid[curr].parentB;
+                }
             }
-            curr = meetingNode;
-            while (curr != -1 && curr != startId && curr != endId) {
-                grid[curr].state = PATH;
-                curr = grid[curr].parentB;
-            }
-            isRunning = false; 
             meetingNode = -1;
+            isAnimatingPath = true;
+            pathIndex = 0;
+            animationClock.restart();
+        }
+
+        if (isAnimatingPath && animationClock.getElapsedTime() >= PATH_STEP_DELAY) {
+            animationClock.restart();
+            if (pathIndex < pathToAnimate.size()) {
+                grid[pathToAnimate[pathIndex++]].state = PATH;
+            } else {
+                isAnimatingPath = false;
+                isRunning = false;
+            }
         }
 
         window.clear();
